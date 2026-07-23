@@ -49,9 +49,54 @@ categoryFilter.addEventListener("change", async (e) => {
   displayProducts(filteredProducts);
 });
 
-/* Chat form submission handler - placeholder for OpenAI integration */
-chatForm.addEventListener("submit", (e) => {
+const workerUrl = "https://teenyweeniedog.sophart.workers.dev/api";
+
+chatForm.addEventListener("submit", async (e) => {
   e.preventDefault();
 
-  chatWindow.innerHTML = "Connect to the OpenAI API for a response!";
+  const userInput = document.getElementById("userInput");
+  const message = userInput.value.trim();
+
+  if (!message) return;
+
+  chatWindow.innerHTML += `<p><strong>You:</strong> ${message}</p>`;
+  userInput.value = "";
+
+  try {
+    const response = await fetch(workerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a friendly L'Oréal beauty assistant. Only answer questions about L'Oréal products, skincare, makeup, haircare, fragrances, and routines."
+          },
+          {
+            role: "user",
+            content: message
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server returned ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    const reply =
+      data.choices?.[0]?.message?.content || "No response received.";
+
+    chatWindow.innerHTML += `<p><strong>AI:</strong> ${reply}</p>`;
+    chatWindow.scrollTop = chatWindow.scrollHeight;
+
+  } catch (err) {
+    console.error(err);
+    chatWindow.innerHTML += `<p><strong>Error:</strong> ${err.message}</p>`;
+  }
 });
