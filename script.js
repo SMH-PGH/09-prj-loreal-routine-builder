@@ -11,6 +11,25 @@ const chatWindow = document.getElementById("chatWindow");
 let allProducts = [];
 let selectedProducts = [];
 const selectedProductsStorageKey = "loreal-selected-products";
+const chatHistoryStorageKey = "loreal-chat-history";
+
+/* Keep the conversation so follow-up questions have context */
+let conversationMessages = [];
+
+const baseSystemMessage = `
+You are a friendly L'Oréal beauty assistant.
+
+Only answer questions about L'Oréal products, skincare, makeup, haircare, fragrances, and routines.
+
+If products are selected:
+- Use ONLY the selected products when creating a routine.
+- Put products in the correct order.
+- Separate Morning and Evening routines.
+- Briefly explain each step.
+- Mention if a product is not for daily use.
+
+If the user asks a general beauty question, answer normally.
+`;
 
 /* Show initial placeholder until user selects a category */
 productsContainer.innerHTML = `
@@ -59,6 +78,71 @@ function loadPreferences() {
   }
 }
 
+/* Save the chat history so the assistant remembers past messages */
+function saveConversation() {
+  localStorage.setItem(
+    chatHistoryStorageKey,
+    JSON.stringify(conversationMessages),
+  );
+}
+
+/* Restore the chat history after a refresh */
+function loadConversation() {
+  const savedValue = localStorage.getItem(chatHistoryStorageKey);
+
+  if (!savedValue) {
+    conversationMessages = [];
+    return;
+  }
+
+  try {
+    const savedMessages = JSON.parse(savedValue);
+
+    if (!Array.isArray(savedMessages)) {
+      conversationMessages = [];
+      return;
+    }
+
+    conversationMessages = savedMessages.filter(
+      (message) =>
+        message &&
+        typeof message.role === "string" &&
+        typeof message.content === "string",
+    );
+  } catch {
+    conversationMessages = [];
+  }
+}
+
+/* Show the saved conversation in the chat window */
+function renderConversation() {
+  chatWindow.innerHTML = conversationMessages
+    .filter(
+      (message) => message.role === "user" || message.role === "assistant",
+    )
+    .map((message) => {
+      const label = message.role === "user" ? "You" : "AI";
+      return `<p><strong>${label}:</strong> ${message.content}</p>`;
+    })
+    .join("");
+
+  chatWindow.scrollTop = chatWindow.scrollHeight;
+}
+
+/* Add one message to the conversation and keep the UI in sync */
+function addConversationMessage(role, content) {
+  conversationMessages = [...conversationMessages, { role, content }];
+  saveConversation();
+  renderConversation();
+}
+
+/* Check whether the user is explicitly asking for a routine */
+function isRoutineRequest(message) {
+  return /\b(routine|build(?:\s+me)?(?:\s+a)?\s+routine|generate(?:\s+my)?\s+routine|make(?:\s+me)?(?:\s+a)?\s+routine)\b/i.test(
+    message,
+  );
+}
+
 /* Check whether a product is already selected */
 function isProductSelected(productId) {
   return selectedProducts.some((product) => product.id === productId);
@@ -70,7 +154,7 @@ function toggleProductSelection(product) {
 
   if (alreadySelected) {
     selectedProducts = selectedProducts.filter(
-      (selectedProduct) => selectedProduct.id !== product.id
+      (selectedProduct) => selectedProduct.id !== product.id,
     );
   } else {
     selectedProducts = [...selectedProducts, product];
@@ -85,7 +169,7 @@ function toggleProductSelection(product) {
 /* Remove a product directly from the selected list */
 function removeSelectedProduct(productId) {
   selectedProducts = selectedProducts.filter(
-    (product) => product.id !== productId
+    (product) => product.id !== productId,
   );
 
   savePreferences();
@@ -191,7 +275,6 @@ function renderProducts() {
   clearProductPreview();
 }
 
-
 /* Handle clicks on product cards */
 productsContainer.addEventListener("click", (e) => {
   const card = e.target.closest(".product-card");
@@ -270,24 +353,49 @@ categoryFilter.addEventListener("change", async (e) => {
 loadProducts().then((products) => {
   allProducts = products;
   loadPreferences();
+  loadConversation();
   renderProducts();
   renderSelectedProducts();
   clearProductPreview();
+  renderConversation();
 });
 
 const workerUrl = "https://teenyweeniedog.sophart.workers.dev/api";
 
-/* Shared function to send requests to the AI */
-async function sendToAI(userMessage) {
+/* Build the selected-product context for the AI */
+function getSelectedProductsContext() {
   const productList =
     selectedProducts.length > 0
       ? selectedProducts
           .map(
             (product) =>
-              `${product.name} (${product.category}) - ${product.description}`
+              `${product.name} (${product.category}) - ${product.description}`,
           )
           .join("\n")
       : "No products selected.";
+
+  return `Selected Products:\n${productList}`;
+}
+
+/* Shared function to send requests to the AI */
+async function sendToAI(userMessage, shouldGenerateRoutine = false) {
+  const messages = [
+    {
+      role: "system",
+      content: baseSystemMessage,
+    },
+    {
+      role: "system",
+      content: getSelectedProductsContext(),
+    },
+    ...conversationMessages,
+    {
+      role: "user",
+      content: shouldGenerateRoutine
+        ? `${userMessage}\n\nCreate a personalized morning and evening routine using only the selected products.`
+        : userMessage,
+    },
+  ];
 
   const response = await fetch(workerUrl, {
     method: "POST",
@@ -295,34 +403,7 @@ async function sendToAI(userMessage) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      messages: [
-        {
-          role: "system",
-          content: `
-You are a friendly L'Oréal beauty assistant.
-
-Only answer questions about L'Oréal products, skincare, makeup, haircare, fragrances, and routines.
-
-If products are selected:
-- Use ONLY the selected products when creating a routine.
-- Put products in the correct order.
-- Separate Morning and Evening routines.
-- Briefly explain each step.
-- Mention if a product is not for daily use.
-
-If the user asks a general beauty question, answer normally.
-`,
-        },
-        {
-          role: "user",
-          content: `
-Selected Products:
-${productList}
-
-${userMessage}
-`,
-        },
-      ],
+      messages,
     }),
   });
 
@@ -344,38 +425,35 @@ chatForm.addEventListener("submit", async (e) => {
 
   if (!message) return;
 
-  chatWindow.innerHTML += `<p><strong>You:</strong> ${message}</p>`;
+  addConversationMessage("user", message);
   userInput.value = "";
 
   try {
-    const reply = await sendToAI(message);
+    const reply = await sendToAI(message, isRoutineRequest(message));
 
-    chatWindow.innerHTML += `<p><strong>AI:</strong> ${reply}</p>`;
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    addConversationMessage("assistant", reply);
   } catch (err) {
-    chatWindow.innerHTML += `<p><strong>Error:</strong> ${err.message}</p>`;
+    addConversationMessage("assistant", `Error: ${err.message}`);
   }
 });
 
 /* Generate Routine Button */
 generateRoutineBtn.addEventListener("click", async () => {
   if (selectedProducts.length === 0) {
-    chatWindow.innerHTML +=
-      `<p><strong>AI:</strong> Please select at least one product first.</p>`;
+    addConversationMessage(
+      "assistant",
+      "Please select at least one product first.",
+    );
     return;
   }
 
-  chatWindow.innerHTML +=
-    `<p><strong>You:</strong> Generate my routine.</p>`;
+  addConversationMessage("user", "Generate my routine.");
 
   try {
-    const reply = await sendToAI(
-      "Generate a personalized morning and evening routine using ONLY the selected products."
-    );
+    const reply = await sendToAI("Generate a personalized routine.", true);
 
-    chatWindow.innerHTML += `<p><strong>AI:</strong> ${reply}</p>`;
-    chatWindow.scrollTop = chatWindow.scrollHeight;
+    addConversationMessage("assistant", reply);
   } catch (err) {
-    chatWindow.innerHTML += `<p><strong>Error:</strong> ${err.message}</p>`;
+    addConversationMessage("assistant", `Error: ${err.message}`);
   }
 });
