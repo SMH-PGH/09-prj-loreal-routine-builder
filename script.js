@@ -29,6 +29,7 @@ If products are selected:
 - Mention if a product is not for daily use.
 
 If the user asks a general beauty question, answer normally.
+Only create a skincare routine when the user explicitly asks for one or when the Generate Routine button is pressed. Otherwise, answer questions normally and do not generate a routine.
 `;
 
 /* Show initial placeholder until user selects a category */
